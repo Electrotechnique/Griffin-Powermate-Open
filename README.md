@@ -1,4 +1,13 @@
-# PowerMate for Windows
+# Griffin PowerMate for Windows
+
+# Electrotechnique note: This application replicates Griffin PowerMate 2 software for Windows. 
+It was programmed by Claude Code Opus 5.5 within just a few minutes, with minimal prompting:
+
+_"can you produce better, open source software for the original usb connected Griffin powermate"    
+"Fantastic, it works on windows 11. Can we have a proper UI for configuring it? So it is possible to set long press, long press and rotate, double press etc.
+I want to at least replicate the original powermate software. Do you have knowledge of how it worked?"_
+
+##
 
 Small, open-source replacement for Griffin's PowerMate software, for the original
 **USB Griffin PowerMate** (silver/black knob, `077D:0410`; the SoundKnob `077D:04AA` also works).
