@@ -1,6 +1,5 @@
 /* Actions: input injection, media keys and Core Audio volume. */
 #define COBJMACROS
-#include <initguid.h>
 #include "actions.h"
 #include "log.h"
 #include <mmdeviceapi.h>
@@ -155,14 +154,22 @@ static void wheel(DWORD flag, int amount)
 
 /* ---------------------------------------------------------------- audio */
 
+/* Defined here so neither MinGW nor MSVC needs extra GUID libraries. */
+static const GUID PM_CLSID_MMDeviceEnumerator =
+    { 0xBCDE0395, 0xE52F, 0x467C, { 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E } };
+static const GUID PM_IID_IMMDeviceEnumerator =
+    { 0xA95664D2, 0x9614, 0x4F35, { 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6 } };
+static const GUID PM_IID_IAudioEndpointVolume =
+    { 0x5CDF2C82, 0x841E, 0x4546, { 0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A } };
+
 static IMMDeviceEnumerator *g_enum;
 static IAudioEndpointVolume *g_vol;
 
 void audio_init(void)
 {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
-                     &IID_IMMDeviceEnumerator, (void **)&g_enum);
+    CoCreateInstance(&PM_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
+                     &PM_IID_IMMDeviceEnumerator, (void **)&g_enum);
     audio_refresh();
 }
 
@@ -172,7 +179,7 @@ void audio_refresh(void)
     if (!g_enum) return;
     IMMDevice *dev = NULL;
     if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(g_enum, eRender, eMultimedia, &dev))) {
-        IMMDevice_Activate(dev, &IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&g_vol);
+        IMMDevice_Activate(dev, &PM_IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&g_vol);
         IMMDevice_Release(dev);
     }
 }
