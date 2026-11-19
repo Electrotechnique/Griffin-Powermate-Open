@@ -36,6 +36,7 @@ jobs:
           path: build/PowerMate.exe
       - name: Point the release tag at this commit
         if: inputs.version != ''
+        shell: bash
         run: |
           git tag -f "${{ inputs.version }}"
           git push -f origin "refs/tags/${{ inputs.version }}"
