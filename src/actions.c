@@ -34,6 +34,12 @@ static BOOL parse_key(const WCHAR *s, size_t n, WORD *vk)
         int f = _wtoi(s + 1);
         if (f >= 1 && f <= 24) { *vk = (WORD)(VK_F1 + f - 1); return TRUE; }
     }
+    if (n >= 3 && n <= 4 && !_wcsnicmp(s, L"vk", 2)) {      /* vkXX: any virtual key */
+        WCHAR hex[3] = { s[2], n == 4 ? s[3] : 0, 0 };
+        WCHAR *end;
+        unsigned long v = wcstoul(hex, &end, 16);
+        if (*end == 0 && v > 0 && v < 255) { *vk = (WORD)v; return TRUE; }
+    }
     for (size_t i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
         if (wcslen(KEYS[i].name) == n && _wcsnicmp(KEYS[i].name, s, n) == 0) {
             *vk = KEYS[i].vk;
@@ -43,7 +49,7 @@ static BOOL parse_key(const WCHAR *s, size_t n, WORD *vk)
 }
 
 /* "ctrl+shift+tab" */
-static BOOL parse_combo(const WCHAR *s, KeyCombo *k)
+BOOL combo_parse(const WCHAR *s, KeyCombo *k)
 {
     k->mods = k->vk = 0;
     while (*s) {
@@ -63,40 +69,106 @@ static BOOL parse_combo(const WCHAR *s, KeyCombo *k)
     return k->vk != 0;
 }
 
-static const struct { const WCHAR *name; int type; } NAMES[] = {
-    { L"none", ACT_NONE }, { L"volume", ACT_VOLUME }, { L"volume_keys", ACT_VOLUME_KEYS },
-    { L"scroll", ACT_SCROLL }, { L"hscroll", ACT_HSCROLL }, { L"zoom", ACT_ZOOM },
-    { L"track", ACT_TRACK }, { L"mute", ACT_MUTE }, { L"play_pause", ACT_PLAY_PAUSE },
-    { L"next_track", ACT_NEXT }, { L"prev_track", ACT_PREV }, { L"stop", ACT_STOP },
+static void key_name(WORD vk, BOOL pretty, WCHAR *out, size_t n)
+{
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        _snwprintf(out, n, pretty ? L"%c" : L"%c", pretty ? vk : towlower(vk));
+        return;
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) { _snwprintf(out, n, pretty ? L"F%d" : L"f%d", vk - VK_F1 + 1); return; }
+    for (size_t i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
+        if (KEYS[i].vk == vk) {
+            if (pretty) {
+                /* Use the keyboard's own name where Windows has one. */
+                UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+                LONG lp = (LONG)(sc << 16);
+                switch (vk) {
+                case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_HOME: case VK_END:
+                case VK_PRIOR: case VK_NEXT: case VK_INSERT: case VK_DELETE: lp |= 1 << 24;
+                }
+                if (sc && vk < VK_VOLUME_MUTE && GetKeyNameTextW(lp, out, (int)n) > 0) return;
+            }
+            _snwprintf(out, n, L"%ls", KEYS[i].name);
+            return;
+        }
+    if (pretty) {
+        UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+        if (sc && GetKeyNameTextW((LONG)(sc << 16), out, (int)n) > 0) return;
+    }
+    _snwprintf(out, n, L"vk%02x", vk);
+}
+
+void combo_format(const KeyCombo *k, BOOL pretty, WCHAR *out, size_t n)
+{
+    static const WCHAR *P[4] = { L"Ctrl", L"Shift", L"Alt", L"Win" };
+    static const WCHAR *R[4] = { L"ctrl", L"shift", L"alt", L"win" };
+    WCHAR key[48];
+    out[0] = 0;
+    if (!k->vk) return;
+    size_t len = 0;
+    for (int i = 0; i < 4; i++)
+        if (k->mods & (1 << i))
+            len += (size_t)_snwprintf(out + len, n - len, L"%ls+", pretty ? P[i] : R[i]);
+    key_name(k->vk, pretty, key, 48);
+    _snwprintf(out + len, n - len, L"%ls", key);
+    out[n - 1] = 0;
+}
+
+static const struct { const WCHAR *id, *label; } ACTS[ACT_COUNT] = {
+    [ACT_NONE]            = { L"none",            L"Do nothing" },
+    [ACT_VOLUME_UP]       = { L"volume_up",       L"Volume up" },
+    [ACT_VOLUME_DOWN]     = { L"volume_down",     L"Volume down" },
+    [ACT_VOLUME_UP_OSD]   = { L"volume_up_osd",   L"Volume up (Windows OSD)" },
+    [ACT_VOLUME_DOWN_OSD] = { L"volume_down_osd", L"Volume down (Windows OSD)" },
+    [ACT_MUTE]            = { L"mute",            L"Mute / unmute" },
+    [ACT_PLAY_PAUSE]      = { L"play_pause",      L"Play / pause" },
+    [ACT_NEXT]            = { L"next_track",      L"Next track" },
+    [ACT_PREV]            = { L"prev_track",      L"Previous track" },
+    [ACT_STOP]            = { L"stop",            L"Stop" },
+    [ACT_SCROLL_UP]       = { L"scroll_up",       L"Scroll up" },
+    [ACT_SCROLL_DOWN]     = { L"scroll_down",     L"Scroll down" },
+    [ACT_SCROLL_LEFT]     = { L"scroll_left",     L"Scroll left" },
+    [ACT_SCROLL_RIGHT]    = { L"scroll_right",    L"Scroll right" },
+    [ACT_ZOOM_IN]         = { L"zoom_in",         L"Zoom in" },
+    [ACT_ZOOM_OUT]        = { L"zoom_out",        L"Zoom out" },
+    [ACT_LEFT_CLICK]      = { L"left_click",      L"Mouse left click" },
+    [ACT_RIGHT_CLICK]     = { L"right_click",     L"Mouse right click" },
+    [ACT_MIDDLE_CLICK]    = { L"middle_click",    L"Mouse middle click" },
+    [ACT_KEY]             = { L"key",             L"Keystroke" },
+    [ACT_RUN]             = { L"run",             L"Open program / file" },
 };
+
+const WCHAR *action_id(int t)    { return t >= 0 && t < ACT_COUNT ? ACTS[t].id : L"none"; }
+const WCHAR *action_label(int t) { return t >= 0 && t < ACT_COUNT ? ACTS[t].label : L""; }
 
 BOOL action_parse(const WCHAR *s, Action *a)
 {
     ZeroMemory(a, sizeof *a);
     while (*s == L' ') s++;
     if (!*s) return TRUE;
-    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++)
-        if (!_wcsicmp(s, NAMES[i].name)) { a->type = NAMES[i].type; return TRUE; }
-
-    if (!_wcsnicmp(s, L"keys:", 5)) {
-        WCHAR buf[128];
-        wcsncpy(buf, s + 5, 127); buf[127] = 0;
-        WCHAR *bar = wcschr(buf, L'|');
-        if (!bar) return FALSE;
-        *bar = 0;
-        a->type = ACT_KEYS;
-        return parse_combo(buf, &a->cw) && parse_combo(bar + 1, &a->ccw);
-    }
     if (!_wcsnicmp(s, L"key:", 4)) {
         a->type = ACT_KEY;
-        return parse_combo(s + 4, &a->cw);
+        return combo_parse(s + 4, &a->key);
     }
     if (!_wcsnicmp(s, L"run:", 4)) {
         a->type = ACT_RUN;
         wcsncpy(a->cmd, s + 4, 259);
         return a->cmd[0] != 0;
     }
+    for (int i = 0; i < ACT_COUNT; i++)
+        if (i != ACT_KEY && i != ACT_RUN && !_wcsicmp(s, ACTS[i].id)) { a->type = i; return TRUE; }
     return FALSE;
+}
+
+void action_format(const Action *a, WCHAR *out, size_t n)
+{
+    WCHAR k[64];
+    switch (a->type) {
+    case ACT_KEY: combo_format(&a->key, FALSE, k, 64); _snwprintf(out, n, L"key:%ls", k); break;
+    case ACT_RUN: _snwprintf(out, n, L"run:%ls", a->cmd); break;
+    default:      _snwprintf(out, n, L"%ls", action_id(a->type)); break;
+    }
+    out[n - 1] = 0;
 }
 
 /* ---------------------------------------------------------------- input */
@@ -227,31 +299,6 @@ static void mute_toggle(void)
         tap(VK_VOLUME_MUTE, 1);
 }
 
-/* ---------------------------------------------------------------- dispatch */
-
-void action_rotate(const Action *a, int steps, const ActionOpts *o)
-{
-    if (!steps) return;
-    int n = abs(steps);
-    BOOL cw = steps > 0;
-    switch (a->type) {
-    case ACT_VOLUME:      volume_change(steps, o); break;
-    case ACT_VOLUME_KEYS: tap(cw ? VK_VOLUME_UP : VK_VOLUME_DOWN, n); break;
-    case ACT_SCROLL:      wheel(MOUSEEVENTF_WHEEL, (o->scroll_invert ? steps : -steps) * o->scroll_step); break;
-    case ACT_HSCROLL:     wheel(MOUSEEVENTF_HWHEEL, (o->scroll_invert ? -steps : steps) * o->scroll_step); break;
-    case ACT_ZOOM: {
-        INPUT in;
-        key_event(&in, VK_CONTROL, FALSE); SendInput(1, &in, sizeof in);
-        wheel(MOUSEEVENTF_WHEEL, steps * WHEEL_DELTA);
-        key_event(&in, VK_CONTROL, TRUE);  SendInput(1, &in, sizeof in);
-        break;
-    }
-    case ACT_TRACK:       tap(cw ? VK_MEDIA_NEXT_TRACK : VK_MEDIA_PREV_TRACK, n); break;
-    case ACT_KEYS:        send_combo(cw ? &a->cw : &a->ccw, n); break;
-    default:              break;
-    }
-}
-
 static void run_command(const WCHAR *cmd)
 {
     WCHAR file[260];
@@ -276,17 +323,48 @@ static void run_command(const WCHAR *cmd)
         LOG(L"run failed (%d): %ls", (int)(INT_PTR)r, cmd);
 }
 
-void action_press(const Action *a)
+static void click(DWORD down, DWORD up)
 {
+    INPUT in[2] = {0};
+    in[0].type = in[1].type = INPUT_MOUSE;
+    in[0].mi.dwFlags = down;
+    in[1].mi.dwFlags = up;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+static void zoom(int notches)
+{
+    INPUT in;
+    key_event(&in, VK_CONTROL, FALSE); SendInput(1, &in, sizeof in);
+    wheel(MOUSEEVENTF_WHEEL, notches * WHEEL_DELTA);
+    key_event(&in, VK_CONTROL, TRUE);  SendInput(1, &in, sizeof in);
+}
+
+void action_do(const Action *a, int n, const ActionOpts *o)
+{
+    if (n <= 0) return;
+    int sc = o->scroll_step * n * (o->scroll_invert ? -1 : 1);
     switch (a->type) {
-    case ACT_MUTE:       mute_toggle(); break;
-    case ACT_PLAY_PAUSE: tap(VK_MEDIA_PLAY_PAUSE, 1); break;
-    case ACT_NEXT:       tap(VK_MEDIA_NEXT_TRACK, 1); break;
-    case ACT_PREV:       tap(VK_MEDIA_PREV_TRACK, 1); break;
-    case ACT_STOP:       tap(VK_MEDIA_STOP, 1); break;
-    case ACT_KEY:        send_combo(&a->cw, 1); break;
-    case ACT_KEYS:       send_combo(&a->cw, 1); break;
-    case ACT_RUN:        run_command(a->cmd); break;
-    default:             break;
+    case ACT_VOLUME_UP:       volume_change(n, o); break;
+    case ACT_VOLUME_DOWN:     volume_change(-n, o); break;
+    case ACT_VOLUME_UP_OSD:   tap(VK_VOLUME_UP, n); break;
+    case ACT_VOLUME_DOWN_OSD: tap(VK_VOLUME_DOWN, n); break;
+    case ACT_MUTE:            while (n--) mute_toggle(); break;
+    case ACT_PLAY_PAUSE:      tap(VK_MEDIA_PLAY_PAUSE, n); break;
+    case ACT_NEXT:            tap(VK_MEDIA_NEXT_TRACK, n); break;
+    case ACT_PREV:            tap(VK_MEDIA_PREV_TRACK, n); break;
+    case ACT_STOP:            tap(VK_MEDIA_STOP, n); break;
+    case ACT_SCROLL_UP:       wheel(MOUSEEVENTF_WHEEL, sc); break;
+    case ACT_SCROLL_DOWN:     wheel(MOUSEEVENTF_WHEEL, -sc); break;
+    case ACT_SCROLL_LEFT:     wheel(MOUSEEVENTF_HWHEEL, -sc); break;
+    case ACT_SCROLL_RIGHT:    wheel(MOUSEEVENTF_HWHEEL, sc); break;
+    case ACT_ZOOM_IN:         zoom(n); break;
+    case ACT_ZOOM_OUT:        zoom(-n); break;
+    case ACT_LEFT_CLICK:      while (n--) click(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP); break;
+    case ACT_RIGHT_CLICK:     while (n--) click(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP); break;
+    case ACT_MIDDLE_CLICK:    while (n--) click(MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP); break;
+    case ACT_KEY:             send_combo(&a->key, n); break;
+    case ACT_RUN:             run_command(a->cmd); break;
+    default:                  break;
     }
 }

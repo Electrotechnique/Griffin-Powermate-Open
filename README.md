@@ -4,12 +4,15 @@ Small, open-source replacement for Griffin's PowerMate software, for the origina
 **USB Griffin PowerMate** (silver/black knob, `077D:0410`; the SoundKnob `077D:04AA` also works).
 
 - Single 200 KB `.exe`, no installer, no runtime, **no driver** — uses the built-in Windows HID driver.
-- Fine volume control (0.5–1 % steps via Core Audio), mute, media keys, scrolling, zoom, any key combo, or launch a program.
-- Gestures: **rotate**, **press + rotate**, **click**, **double-click**, **long press**.
-- **Per-application profiles** — e.g. press-and-turn switches tabs in Chrome, scrolls in your editor.
-- LED follows the volume and breathes while muted (or on / off / pulse).
-- Speed acceleration, adjustable sensitivity, hot-plug, survives sleep and Explorer restarts.
-- Settings in a plain, commented INI file, reloaded automatically when saved.
+- **Settings window** modelled on Griffin's original: applications on the left, an action for
+  every gesture on the right, LED and timing options below.
+- Gestures: **rotate left / right**, **press + rotate left / right**, **long press + rotate
+  left / right**, **click**, **double click**, **long press** — each direction set separately.
+- Actions: fine volume (0.5–1 % steps via Core Audio) or Windows-OSD volume, mute, media keys,
+  scroll in any direction, zoom, mouse clicks, any keystroke, or open a program / file.
+- **Per-application settings**: anything not set for an application falls back to Global.
+- LED follows the volume and breathes while muted (or on / off / pulse), adjustable brightness.
+- Speed boost for fast spins, adjustable sensitivity, hot-plug, survives sleep and Explorer restarts.
 
 ## Install
 
@@ -18,58 +21,34 @@ Small, open-source replacement for Griffin's PowerMate software, for the origina
 3. Run `PowerMate.exe`. It sits in the notification area; right-click for the menu and tick
    **Start with Windows**.
 
-Click the tray icon for the menu: pause, LED mode, **Edit settings...**, start with Windows.
+Click the tray icon to open **Settings**; right-click for pause, LED mode and exit.
 
 ## Default behaviour
 
 | Gesture | Action |
 |---|---|
-| Rotate | Volume |
-| Press + rotate | Next / previous track |
+| Rotate left / right | Volume down / up |
+| Press + rotate left / right | Previous / next track |
 | Click | Mute |
 | Long press | Play / pause |
-| Press + rotate in Chrome / Edge / Firefox | Next / previous tab |
+| Press + rotate in Chrome / Edge / Firefox | Previous / next tab |
 
 ## Settings
 
-`%APPDATA%\PowerMate\powermate.ini` (created on first run). For portable use, put a
-`powermate.ini` next to the exe and it is used instead.
+Use the Settings window. To add an application, click **Add...** and pick a running program
+or browse for its `.exe`. For a **Keystroke**, click the key box and press the combination.
+While the Settings window is active, the bottom line shows which gesture and action each
+turn or press triggers; keystrokes, clicks and scrolling aren't sent to the window itself.
 
-```ini
-[general]
-led=volume            ; volume | on | off | pulse
-volume_step=1         ; percent per step
-sensitivity=1         ; detents per step
-acceleration=2        ; fast spins move 2x (0 = off)
-scroll_step=40        ; 120 = one wheel notch
+How long press works: holding past the *long press* time and then turning gives
+*long press + rotate*. If an application has long-press-rotate actions, its *long press*
+action runs when you let go (so holding to turn doesn't also trigger it); otherwise it runs
+as soon as the time is reached. *Double click* delays single clicks by the double-click
+time, so leave it as *Do nothing* for instant clicks.
 
-[default]
-rotate=volume
-press_rotate=track
-click=mute
-double_click=         ; empty = instant clicks
-long_press=play_pause
-
-[app:code.exe]
-rotate=scroll
-press_rotate=keys:ctrl+pgdn|ctrl+pgup
-click=key:ctrl+shift+p
-
-[app:photoshop.exe]
-rotate=keys:]|[        ; brush size
-```
-
-**Rotation actions:** `volume`, `volume_keys` (shows the Windows volume OSD), `scroll`, `hscroll`,
-`zoom`, `track`, `keys:<clockwise>|<anticlockwise>`
-
-**Button actions:** `mute`, `play_pause`, `next_track`, `prev_track`, `stop`, `key:<combo>`,
-`run:<command>`, `none`
-
-**Keys:** `a`–`z`, `0`–`9`, `f1`–`f24`, `tab enter esc space backspace delete insert left right up
-down home end pgup pgdn plus minus comma period [ ] volup voldown mute playpause next prev stop
-printscreen apps`, joined with `ctrl shift alt win`, e.g. `ctrl+shift+tab`.
-
-The full list is also in the generated INI file.
+Settings are stored in `%APPDATA%\PowerMate\powermate.ini`, which you can also edit by
+hand (it reloads automatically). For portable use, put a `powermate.ini` next to the exe.
+Settings files from version 1.0 are converted automatically.
 
 ## Troubleshooting
 

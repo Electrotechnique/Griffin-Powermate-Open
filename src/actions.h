@@ -1,24 +1,18 @@
 #pragma once
 #include <windows.h>
 
+/* Every action is one-directional; rotation runs it once per step. */
 enum {
     ACT_NONE = 0,
-    /* rotation */
-    ACT_VOLUME,        /* fine-grained master volume (Core Audio) */
-    ACT_VOLUME_KEYS,   /* volume keys: native Windows OSD, 2% steps */
-    ACT_SCROLL,        /* vertical mouse wheel */
-    ACT_HSCROLL,       /* horizontal mouse wheel */
-    ACT_ZOOM,          /* Ctrl + wheel */
-    ACT_TRACK,         /* next / previous track */
-    ACT_KEYS,          /* keys:<clockwise>|<anticlockwise> */
-    /* button */
-    ACT_MUTE,
-    ACT_PLAY_PAUSE,
-    ACT_NEXT,
-    ACT_PREV,
-    ACT_STOP,
+    ACT_VOLUME_UP, ACT_VOLUME_DOWN,
+    ACT_VOLUME_UP_OSD, ACT_VOLUME_DOWN_OSD,
+    ACT_MUTE, ACT_PLAY_PAUSE, ACT_NEXT, ACT_PREV, ACT_STOP,
+    ACT_SCROLL_UP, ACT_SCROLL_DOWN, ACT_SCROLL_LEFT, ACT_SCROLL_RIGHT,
+    ACT_ZOOM_IN, ACT_ZOOM_OUT,
+    ACT_LEFT_CLICK, ACT_RIGHT_CLICK, ACT_MIDDLE_CLICK,
     ACT_KEY,           /* key:<combo> */
     ACT_RUN,           /* run:<command line> */
+    ACT_COUNT
 };
 
 #define MOD_C 1
@@ -30,7 +24,7 @@ typedef struct { WORD mods, vk; } KeyCombo;
 
 typedef struct {
     int      type;
-    KeyCombo cw, ccw;          /* ACT_KEYS: cw/ccw; ACT_KEY: cw */
+    KeyCombo key;              /* ACT_KEY */
     WCHAR    cmd[260];         /* ACT_RUN */
 } Action;
 
@@ -41,9 +35,15 @@ typedef struct {
     int unmute_on_turn;
 } ActionOpts;
 
-BOOL action_parse(const WCHAR *s, Action *out);  /* FALSE on syntax error */
-void action_rotate(const Action *a, int steps, const ActionOpts *o);
-void action_press(const Action *a);
+const WCHAR *action_id(int type);      /* INI name, e.g. "volume_up" */
+const WCHAR *action_label(int type);   /* UI name, e.g. "Volume up" */
+
+BOOL action_parse(const WCHAR *s, Action *out);       /* FALSE on syntax error */
+void action_format(const Action *a, WCHAR *out, size_t n);
+BOOL combo_parse(const WCHAR *s, KeyCombo *k);
+void combo_format(const KeyCombo *k, BOOL pretty, WCHAR *out, size_t n);
+
+void action_do(const Action *a, int times, const ActionOpts *o);
 
 void  audio_init(void);
 void  audio_refresh(void);                 /* re-acquire default output device */

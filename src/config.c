@@ -1,68 +1,30 @@
 /* powermate.ini handling.
- * Looked for next to the exe first (portable), else %APPDATA%\PowerMate\powermate.ini. */
+ * Looked for next to the exe first (portable), else %APPDATA%\PowerMate\powermate.ini.
+ * Written as UTF-16 so program paths with any characters survive. */
 #include "config.h"
 #include "log.h"
 #include <shlobj.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <wchar.h>
 
 static WCHAR g_path[MAX_PATH];
 
-static const char DEFAULT_INI[] =
-"; Griffin PowerMate settings. Saved changes are picked up automatically.\n"
-"\n"
-"[general]\n"
-"; LED: volume (brightness follows volume) | on | off | pulse\n"
-"led=volume\n"
-"led_brightness=255\n"
-"; With led=volume, breathe the LED while muted\n"
-"mute_pulse=1\n"
-"pulse_ms=2000\n"
-"long_press_ms=500\n"
-"double_click_ms=300\n"
-"; Knob detents needed for one step (raise to slow the knob down)\n"
-"sensitivity=1\n"
-"; Fast spins move this many times further (0 = off)\n"
-"acceleration=2\n"
-"; Volume change per step, in percent (decimals allowed)\n"
-"volume_step=1\n"
-"; Wheel units per step; 120 = one mouse-wheel notch\n"
-"scroll_step=40\n"
-"scroll_invert=0\n"
-"unmute_on_turn=1\n"
-"\n"
-"; Gestures: rotate, press_rotate (turn while held), click, double_click, long_press\n"
-";\n"
-"; Rotation actions: volume, volume_keys (shows Windows OSD), scroll, hscroll, zoom,\n"
-";   track, keys:<clockwise>|<anticlockwise>   e.g. keys:ctrl+tab|ctrl+shift+tab\n"
-"; Button actions: mute, play_pause, next_track, prev_track, stop,\n"
-";   key:<combo>   e.g. key:ctrl+shift+m\n"
-";   run:<command> e.g. run:calc.exe\n"
-"; Any gesture: none. Leave double_click empty for instant clicks.\n"
-";\n"
-"; Key names: a-z 0-9 f1-f24 tab enter esc space backspace delete insert left right\n"
-";   up down home end pgup pgdn plus minus comma period [ ] volup voldown mute\n"
-";   playpause next prev stop printscreen apps; modifiers ctrl shift alt win\n"
-"\n"
-"[default]\n"
-"rotate=volume\n"
-"press_rotate=track\n"
-"click=mute\n"
-"double_click=\n"
-"long_press=play_pause\n"
-"\n"
-"; Per-application profiles: [app:<exe name>] for the foreground window.\n"
-"; Unset gestures fall back to [default].\n"
-"\n"
-"[app:chrome.exe]\n"
-"press_rotate=keys:ctrl+tab|ctrl+shift+tab\n"
-"\n"
-"[app:msedge.exe]\n"
-"press_rotate=keys:ctrl+tab|ctrl+shift+tab\n"
-"\n"
-"[app:firefox.exe]\n"
-"press_rotate=keys:ctrl+tab|ctrl+shift+tab\n";
+static const struct { const WCHAR *id, *label; } GESTURES[G_COUNT] = {
+    { L"rotate_left",            L"Rotate left" },
+    { L"rotate_right",           L"Rotate right" },
+    { L"press_rotate_left",      L"Press + rotate left" },
+    { L"press_rotate_right",     L"Press + rotate right" },
+    { L"long_press_rotate_left", L"Long press + rotate left" },
+    { L"long_press_rotate_right",L"Long press + rotate right" },
+    { L"click",                  L"Click" },
+    { L"double_click",           L"Double click" },
+    { L"long_press",             L"Long press" },
+};
+
+const WCHAR *gesture_id(int g)    { return GESTURES[g].id; }
+const WCHAR *gesture_label(int g) { return GESTURES[g].label; }
 
 const WCHAR *config_path(void)
 {
@@ -90,66 +52,154 @@ const WCHAR *config_path(void)
     return g_path;
 }
 
-static void write_default(void)
+/* ---------------------------------------------------------------- defaults */
+
+static void set_action(Profile *p, int g, const WCHAR *s)
 {
-    FILE *f = _wfopen(config_path(), L"wb");
-    if (!f) return;
-    fwrite(DEFAULT_INI, 1, sizeof DEFAULT_INI - 1, f);
-    fclose(f);
+    action_parse(s, &p->g[g]);
+    p->set |= 1u << g;
 }
 
-static void get_str(const WCHAR *sec, const WCHAR *key, WCHAR *out, DWORD n)
+static Profile *add_app(Config *c, const WCHAR *exe)
+{
+    if (c->nprofiles >= MAX_PROFILES) return NULL;
+    Profile *p = &c->profiles[c->nprofiles++];
+    ZeroMemory(p, sizeof *p);
+    wcsncpy(p->exe, exe, 63);
+    _wcslwr(p->exe);
+    return p;
+}
+
+void config_defaults(Config *c)
+{
+    ZeroMemory(c, sizeof *c);
+    c->led_mode = LED_VOLUME;
+    c->led_max = 255;
+    c->mute_pulse = 1;
+    c->pulse_ms = 2000;
+    c->long_press_ms = 500;
+    c->double_click_ms = 300;
+    c->sensitivity = 1;
+    c->acceleration = 2;
+    c->opts.volume_step = 1.0f;
+    c->opts.scroll_step = 40;
+    c->opts.unmute_on_turn = 1;
+
+    Profile *d = &c->profiles[0];
+    c->nprofiles = 1;
+    for (int g = 0; g < G_COUNT; g++) set_action(d, g, L"none");
+    set_action(d, G_ROTATE_LEFT, L"volume_down");
+    set_action(d, G_ROTATE_RIGHT, L"volume_up");
+    set_action(d, G_PRESS_ROTATE_LEFT, L"prev_track");
+    set_action(d, G_PRESS_ROTATE_RIGHT, L"next_track");
+    set_action(d, G_CLICK, L"mute");
+    set_action(d, G_LONG_PRESS, L"play_pause");
+
+    static const WCHAR *browsers[] = { L"chrome.exe", L"msedge.exe", L"firefox.exe" };
+    for (int i = 0; i < 3; i++) {
+        Profile *p = add_app(c, browsers[i]);
+        set_action(p, G_PRESS_ROTATE_LEFT, L"key:ctrl+shift+tab");
+        set_action(p, G_PRESS_ROTATE_RIGHT, L"key:ctrl+tab");
+    }
+    config_resolve(c);
+}
+
+void config_resolve(Config *c)
+{
+    for (int i = 1; i < c->nprofiles; i++)
+        for (int g = 0; g < G_COUNT; g++)
+            if (!(c->profiles[i].set & (1u << g)))
+                c->profiles[i].g[g] = c->profiles[0].g[g];
+}
+
+/* ---------------------------------------------------------------- load */
+
+/* Returns FALSE if the key is absent. Strips " ; comment" tails. */
+static BOOL get_str(const WCHAR *sec, const WCHAR *key, WCHAR *out, DWORD n)
 {
     GetPrivateProfileStringW(sec, key, L"\x01", out, n, config_path());
-    WCHAR *semi = wcschr(out, L';');            /* trailing comments */
-    if (semi) *semi = 0;
+    if (out[0] == 1) return FALSE;
+    for (WCHAR *p = out; *p; p++)
+        if (*p == L';' && (p == out || p[-1] == L' ' || p[-1] == L'\t')) { *p = 0; break; }
     size_t len = wcslen(out);
     while (len && (out[len - 1] == L' ' || out[len - 1] == L'\t')) out[--len] = 0;
+    return TRUE;
 }
 
 static int get_int(const WCHAR *key, int def, int lo, int hi)
 {
     WCHAR b[32];
-    get_str(L"general", key, b, 32);
-    if (b[0] == 1 || !b[0]) return def;
+    if (!get_str(L"general", key, b, 32) || !b[0]) return def;
     int v = _wtoi(b);
     return v < lo ? lo : v > hi ? hi : v;
 }
 
-/* Only overwrites *a if the key is present. */
-static void get_action(Config *c, const WCHAR *sec, const WCHAR *key, Action *a)
+/* Version 1.0 used one setting per rotation: rotate=volume etc. */
+static void legacy_rotation(Config *c, const WCHAR *sec, const WCHAR *key, Profile *p, int gl, int gr)
 {
     WCHAR b[300];
-    get_str(sec, key, b, 300);
-    if (b[0] == 1) return;
-    Action tmp;
-    if (action_parse(b, &tmp))
-        *a = tmp;
-    else {
-        c->errors++;
-        LOG(L"config: [%ls] %ls=%ls is not valid", sec, key, b);
+    if (!get_str(sec, key, b, 300) || (p->set & ((1u << gl) | (1u << gr)))) return;
+    static const struct { const WCHAR *name, *left, *right; } MAP[] = {
+        { L"none", L"none", L"none" },
+        { L"volume", L"volume_down", L"volume_up" },
+        { L"volume_keys", L"volume_down_osd", L"volume_up_osd" },
+        { L"scroll", L"scroll_up", L"scroll_down" },
+        { L"hscroll", L"scroll_left", L"scroll_right" },
+        { L"zoom", L"zoom_out", L"zoom_in" },
+        { L"track", L"prev_track", L"next_track" },
+    };
+    if (!b[0]) { set_action(p, gl, L"none"); set_action(p, gr, L"none"); return; }
+    for (size_t i = 0; i < sizeof MAP / sizeof MAP[0]; i++)
+        if (!_wcsicmp(b, MAP[i].name)) { set_action(p, gl, MAP[i].left); set_action(p, gr, MAP[i].right); return; }
+    if (!_wcsnicmp(b, L"keys:", 5)) {
+        WCHAR *bar = wcschr(b, L'|');
+        KeyCombo k1, k2;
+        if (bar) {
+            *bar = 0;
+            if (combo_parse(b + 5, &k1) && combo_parse(bar + 1, &k2)) {
+                p->g[gr].type = ACT_KEY; p->g[gr].key = k1;
+                p->g[gl].type = ACT_KEY; p->g[gl].key = k2;
+                p->set |= (1u << gl) | (1u << gr);
+                return;
+            }
+        }
     }
+    c->errors++;
+    LOG(L"config: [%ls] %ls=%ls is not valid", sec, key, b);
 }
 
 static void load_profile(Config *c, const WCHAR *sec, Profile *p)
 {
-    get_action(c, sec, L"rotate", &p->rotate);
-    get_action(c, sec, L"press_rotate", &p->press_rotate);
-    get_action(c, sec, L"click", &p->click);
-    get_action(c, sec, L"double_click", &p->double_click);
-    get_action(c, sec, L"long_press", &p->long_press);
+    WCHAR b[300];
+    for (int g = 0; g < G_COUNT; g++) {
+        if (!get_str(sec, GESTURES[g].id, b, 300)) continue;
+        Action a;
+        if (action_parse(b, &a)) {
+            p->g[g] = a;
+            p->set |= 1u << g;
+        } else {
+            c->errors++;
+            LOG(L"config: [%ls] %ls=%ls is not valid", sec, GESTURES[g].id, b);
+        }
+    }
+    legacy_rotation(c, sec, L"rotate", p, G_ROTATE_LEFT, G_ROTATE_RIGHT);
+    legacy_rotation(c, sec, L"press_rotate", p, G_PRESS_ROTATE_LEFT, G_PRESS_ROTATE_RIGHT);
 }
 
 void config_load(Config *c)
 {
-    if (GetFileAttributesW(config_path()) == INVALID_FILE_ATTRIBUTES)
-        write_default();
+    if (GetFileAttributesW(config_path()) == INVALID_FILE_ATTRIBUTES) {
+        config_defaults(c);
+        config_save(c);
+        return;
+    }
+    config_defaults(c);
+    c->nprofiles = 1;                     /* keep global defaults, drop default app profiles */
 
-    ZeroMemory(c, sizeof *c);
     WCHAR b[32];
-    get_str(L"general", L"led", b, 32);
-    c->led_mode = !_wcsicmp(b, L"on") ? LED_ON : !_wcsicmp(b, L"off") ? LED_OFF :
-                  !_wcsicmp(b, L"pulse") ? LED_PULSE : LED_VOLUME;
+    if (get_str(L"general", L"led", b, 32))
+        c->led_mode = !_wcsicmp(b, L"on") ? LED_ON : !_wcsicmp(b, L"off") ? LED_OFF :
+                      !_wcsicmp(b, L"pulse") ? LED_PULSE : LED_VOLUME;
     c->led_max         = get_int(L"led_brightness", 255, 0, 255);
     c->mute_pulse      = get_int(L"mute_pulse", 1, 0, 1);
     c->pulse_ms        = get_int(L"pulse_ms", 2000, 200, 20000);
@@ -160,31 +210,97 @@ void config_load(Config *c)
     c->opts.scroll_step    = get_int(L"scroll_step", 40, 1, 1200);
     c->opts.scroll_invert  = get_int(L"scroll_invert", 0, 0, 1);
     c->opts.unmute_on_turn = get_int(L"unmute_on_turn", 1, 0, 1);
-    get_str(L"general", L"volume_step", b, 32);
-    c->opts.volume_step = (b[0] == 1 || !b[0]) ? 1.0f : (float)_wtof(b);
-    if (c->opts.volume_step <= 0 || c->opts.volume_step > 50) c->opts.volume_step = 1.0f;
+    if (get_str(L"general", L"volume_step", b, 32) && b[0]) {
+        c->opts.volume_step = (float)_wtof(b);
+        if (c->opts.volume_step <= 0 || c->opts.volume_step > 50) c->opts.volume_step = 1.0f;
+    }
 
-    /* defaults if the [default] section is missing keys */
-    Profile *d = &c->profiles[0];
-    action_parse(L"volume", &d->rotate);
-    action_parse(L"track", &d->press_rotate);
-    action_parse(L"mute", &d->click);
-    action_parse(L"play_pause", &d->long_press);
-    load_profile(c, L"default", d);
-    c->nprofiles = 1;
+    c->profiles[0].set = 0;               /* so legacy keys can apply */
+    load_profile(c, L"default", &c->profiles[0]);
+    c->profiles[0].set = (1u << G_COUNT) - 1;
 
-    static WCHAR names[8192];
-    DWORD n = GetPrivateProfileSectionNamesW(names, 8192, config_path());
-    for (WCHAR *s = names; n && *s && c->nprofiles < MAX_PROFILES; s += wcslen(s) + 1) {
+    static WCHAR names[16384];
+    DWORD n = GetPrivateProfileSectionNamesW(names, 16384, config_path());
+    for (WCHAR *s = names; n && *s; s += wcslen(s) + 1) {
         if (_wcsnicmp(s, L"app:", 4) || !s[4]) continue;
-        Profile *p = &c->profiles[c->nprofiles++];
-        *p = *d;
-        wcsncpy(p->exe, s + 4, 63);
-        p->exe[63] = 0;
-        _wcslwr(p->exe);
+        Profile *p = add_app(c, s + 4);
+        if (!p) break;
         load_profile(c, s, p);
     }
+    config_resolve(c);
     LOG(L"config: %ls (%d profiles, %d errors)", config_path(), c->nprofiles, c->errors);
+}
+
+/* ---------------------------------------------------------------- save */
+
+typedef struct { WCHAR *buf; size_t len, cap; } Out;
+
+static void out(Out *o, const WCHAR *fmt, ...)
+{
+    WCHAR line[600];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = _vsnwprintf(line, 600, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = 599;
+    line[599] = 0;
+    if (o->len + (size_t)n + 1 > o->cap) {
+        size_t cap = (o->cap + (size_t)n + 1) * 2;
+        WCHAR *nb = realloc(o->buf, cap * sizeof(WCHAR));
+        if (!nb) return;
+        o->buf = nb; o->cap = cap;
+    }
+    wcscpy(o->buf + o->len, line);
+    o->len += (size_t)n;
+}
+
+static void out_profile(Out *o, const Profile *p, BOOL all)
+{
+    WCHAR a[300];
+    for (int g = 0; g < G_COUNT; g++) {
+        if (!all && !(p->set & (1u << g))) continue;
+        action_format(&p->g[g], a, 300);
+        out(o, L"%ls=%ls\r\n", GESTURES[g].id, a);
+    }
+}
+
+BOOL config_save(const Config *c)
+{
+    static const WCHAR *LED[] = { L"volume", L"on", L"off", L"pulse" };
+    Out o = {0};
+    out(&o, L"\xFEFF; Griffin PowerMate settings. Edit with PowerMate's Settings window, or by hand.\r\n"
+            L"; Actions: none volume_up volume_down volume_up_osd volume_down_osd mute play_pause\r\n"
+            L";   next_track prev_track stop scroll_up scroll_down scroll_left scroll_right zoom_in\r\n"
+            L";   zoom_out left_click right_click middle_click key:<ctrl+shift+tab> run:<command>\r\n\r\n");
+    out(&o, L"[general]\r\nled=%ls\r\nled_brightness=%d\r\nmute_pulse=%d\r\npulse_ms=%d\r\n",
+        LED[c->led_mode], c->led_max, c->mute_pulse, c->pulse_ms);
+    out(&o, L"long_press_ms=%d\r\ndouble_click_ms=%d\r\nsensitivity=%d\r\nacceleration=%d\r\n",
+        c->long_press_ms, c->double_click_ms, c->sensitivity, c->acceleration);
+    out(&o, L"volume_step=%g\r\nscroll_step=%d\r\nscroll_invert=%d\r\nunmute_on_turn=%d\r\n\r\n",
+        (double)c->opts.volume_step, c->opts.scroll_step, c->opts.scroll_invert, c->opts.unmute_on_turn);
+    out(&o, L"[default]\r\n");
+    out_profile(&o, &c->profiles[0], TRUE);
+    for (int i = 1; i < c->nprofiles; i++) {
+        out(&o, L"\r\n[app:%ls]\r\n", c->profiles[i].exe);
+        out_profile(&o, &c->profiles[i], FALSE);
+    }
+    if (!o.buf) return FALSE;
+
+    /* write to a temp file and swap, so a crash never leaves a half-written config */
+    WCHAR tmp[MAX_PATH + 8];
+    _snwprintf(tmp, MAX_PATH + 8, L"%ls.tmp", config_path());
+    tmp[MAX_PATH + 7] = 0;
+    BOOL ok = FALSE;
+    HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD w;
+        ok = WriteFile(f, o.buf, (DWORD)(o.len * sizeof(WCHAR)), &w, NULL) && w == o.len * sizeof(WCHAR);
+        CloseHandle(f);
+        ok = ok && MoveFileExW(tmp, config_path(), MOVEFILE_REPLACE_EXISTING);
+        if (!ok) DeleteFileW(tmp);
+    }
+    free(o.buf);
+    return ok;
 }
 
 const Profile *config_profile(const Config *c, const WCHAR *exe)

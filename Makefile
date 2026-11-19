@@ -6,7 +6,7 @@ CFLAGS  ?= -O2 -Wall -Wextra -Wno-cast-function-type -Wno-missing-field-initiali
 CFLAGS  += -municode -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0A00 -std=c11
 LDFLAGS += -municode -mwindows -static -s
 WINE    ?= wine
-LIBS    := -lhid -lsetupapi -lole32 -luuid -lshell32 -luser32 -ladvapi32 -lm
+LIBS    := -lhid -lsetupapi -lole32 -luuid -lshell32 -luser32 -ladvapi32 -lm -lcomctl32 -lcomdlg32
 
 SRC := $(wildcard src/*.c)
 OBJ := $(SRC:src/%.c=build/%.o) build/app.res.o

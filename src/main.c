@@ -11,6 +11,7 @@
 #include "actions.h"
 #include "config.h"
 #include "log.h"
+#include "settings.h"
 #include "resource.h"
 
 #define APP_NAME   L"PowerMate"
@@ -18,7 +19,7 @@
 #define RUN_KEY    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 
 enum { T_RETRY = 1, T_LONG, T_DBL, T_LED, T_CFG };
-enum { ID_PAUSE = 100, ID_EDIT, ID_RELOAD, ID_STARTUP, ID_EXIT,
+enum { ID_PAUSE = 100, ID_SETTINGS, ID_EDIT, ID_RELOAD, ID_STARTUP, ID_EXIT,
        ID_LED_VOLUME, ID_LED_ON, ID_LED_OFF, ID_LED_PULSE };
 
 static Config  C;
@@ -33,7 +34,7 @@ static HDEVNOTIFY g_devNotify;
 static int     g_ledOverride = -1;   /* tray LED choice, -1 = from config */
 
 /* gesture state */
-static BOOL    g_down, g_rotated, g_longFired, g_clickPending;
+static BOOL    g_down, g_rotated, g_longHeld, g_longFired, g_clickPending;
 static const Profile *g_downProfile, *g_clickProfile;
 static int     g_accum;
 
@@ -92,14 +93,14 @@ static const Profile *current_profile(void)
     return config_profile(&C, exe);
 }
 
-static BOOL startup_enabled(void)
+BOOL startup_enabled(void)
 {
     WCHAR v[MAX_PATH * 2];
     DWORD sz = sizeof v;
     return RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, APP_NAME, RRF_RT_REG_SZ, NULL, v, &sz) == ERROR_SUCCESS;
 }
 
-static void startup_set(BOOL on)
+void startup_set(BOOL on)
 {
     HKEY k;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return;
@@ -177,14 +178,16 @@ static void tray_menu(void)
 
     AppendMenuW(m, MF_STRING | MF_GRAYED, 0, pm_is_open() ? L"PowerMate connected" : L"PowerMate not connected");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, ID_SETTINGS, L"&Settings...");
     AppendMenuW(m, MF_STRING | (g_paused ? MF_CHECKED : 0), ID_PAUSE, L"&Pause");
     AppendMenuW(m, MF_POPUP | (pm_has_led() ? 0 : MF_GRAYED), (UINT_PTR)led, L"&LED");
-    AppendMenuW(m, MF_STRING, ID_EDIT, L"&Edit settings...");
-    AppendMenuW(m, MF_STRING, ID_RELOAD, L"&Reload settings");
+    AppendMenuW(m, MF_STRING, ID_EDIT, L"Open settings &file");
+    AppendMenuW(m, MF_STRING, ID_RELOAD, L"&Reload settings file");
     AppendMenuW(m, MF_STRING | (startup_enabled() ? MF_CHECKED : 0), ID_STARTUP, L"Start with &Windows");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, ID_EXIT, L"E&xit");
 
+    SetMenuDefaultItem(m, ID_SETTINGS, FALSE);
     POINT pt;
     GetCursorPos(&pt);
     SetForegroundWindow(g_hwnd);
@@ -222,29 +225,73 @@ static void led_tick(void)
 
 static void reset_gesture(void)
 {
-    g_down = g_rotated = g_longFired = g_clickPending = FALSE;
+    g_down = g_rotated = g_longHeld = g_longFired = g_clickPending = FALSE;
     g_accum = 0;
     KillTimer(g_hwnd, T_LONG);
     KillTimer(g_hwnd, T_DBL);
 }
 
+static BOOL has(const Profile *p, int g) { return p->g[g].type != ACT_NONE; }
+
+/* Keystrokes, clicks and scrolling would land in the settings window itself. */
+static BOOL is_input_action(int t)
+{
+    return t == ACT_KEY || t == ACT_RUN || (t >= ACT_SCROLL_UP && t <= ACT_MIDDLE_CLICK);
+}
+
+static void fire(const Profile *p, int g, int n)
+{
+    const Action *a = &p->g[g];
+    WCHAR msg[200], detail[64] = L"";
+    if (a->type == ACT_KEY) combo_format(&a->key, TRUE, detail, 64);
+    else if (a->type == ACT_RUN) wcsncpy(detail, a->cmd, 63);
+    detail[63] = 0;
+    BOOL suppress = settings_foreground() && is_input_action(a->type);
+    _snwprintf(msg, 200, L"%ls \x2192 %ls%ls%ls%ls%ls", gesture_label(g), action_label(a->type),
+               detail[0] ? L" " : L"", detail,
+               p->exe[0] ? L"  in " : L"", p->exe);
+    msg[199] = 0;
+    if (suppress) wcsncat(msg, L"  (not sent while this window is active)", 199 - wcslen(msg));
+    settings_gesture(msg);
+    LOG(L"%ls x%d", msg, n);
+    if (!suppress) action_do(a, n, &C.opts);
+}
+
 static void on_down(void)
 {
+    const Profile *p = current_profile();
     g_down = TRUE;
-    g_rotated = g_longFired = FALSE;
-    g_downProfile = current_profile();
-    if (g_downProfile->long_press.type != ACT_NONE)
+    g_rotated = g_longHeld = g_longFired = FALSE;
+    g_accum = 0;
+    g_downProfile = p;
+    if (has(p, G_LONG_PRESS) || has(p, G_LONG_ROTATE_LEFT) || has(p, G_LONG_ROTATE_RIGHT))
         SetTimer(g_hwnd, T_LONG, C.long_press_ms, NULL);
+}
+
+static void on_long_timer(void)
+{
+    KillTimer(g_hwnd, T_LONG);
+    if (!g_down || g_rotated) return;
+    const Profile *p = g_downProfile;
+    g_longHeld = TRUE;
+    /* With no long-press-rotate actions, fire immediately; otherwise wait for release
+     * so that holding and then turning doesn't also trigger the long press. */
+    if (!has(p, G_LONG_ROTATE_LEFT) && !has(p, G_LONG_ROTATE_RIGHT) && has(p, G_LONG_PRESS)) {
+        g_longFired = TRUE;
+        fire(p, G_LONG_PRESS, 1);
+    }
 }
 
 static void on_turn(int d)
 {
     const Profile *p = g_down ? g_downProfile : current_profile();
-    const Action *a = &p->rotate;
+    int left = G_ROTATE_LEFT;
     if (g_down) {
-        g_rotated = TRUE;
-        KillTimer(g_hwnd, T_LONG);
-        if (p->press_rotate.type != ACT_NONE) a = &p->press_rotate;
+        if (!g_rotated) {
+            g_rotated = TRUE;
+            if (!g_longHeld) KillTimer(g_hwnd, T_LONG);
+        }
+        left = g_longHeld ? G_LONG_ROTATE_LEFT : G_PRESS_ROTATE_LEFT;
     }
     if ((g_accum > 0 && d < 0) || (g_accum < 0 && d > 0)) g_accum = 0;  /* direction change */
     g_accum += d;
@@ -252,8 +299,7 @@ static void on_turn(int d)
     g_accum -= steps * C.sensitivity;
     if (!steps) return;
     if (C.acceleration && abs(d) >= 3) steps *= C.acceleration;
-    LOG(L"turn %+d -> %+d steps (action %d)", d, steps, a->type);
-    action_rotate(a, steps, &C.opts);
+    fire(p, steps > 0 ? left + 1 : left, abs(steps));
 }
 
 static void on_up(void)
@@ -262,14 +308,16 @@ static void on_up(void)
     KillTimer(g_hwnd, T_LONG);
     if (g_rotated || g_longFired) return;
     const Profile *p = g_downProfile;
-    if (p->double_click.type == ACT_NONE) {
-        LOG(L"click");
-        action_press(&p->click);
+    if (g_longHeld) {
+        if (has(p, G_LONG_PRESS)) fire(p, G_LONG_PRESS, 1);
+        return;
+    }
+    if (!has(p, G_DOUBLE_CLICK)) {
+        fire(p, G_CLICK, 1);
     } else if (g_clickPending && g_clickProfile == p) {
         g_clickPending = FALSE;
         KillTimer(g_hwnd, T_DBL);
-        LOG(L"double click");
-        action_press(&p->double_click);
+        fire(p, G_DOUBLE_CLICK, 1);
     } else {
         g_clickPending = TRUE;
         g_clickProfile = p;
@@ -313,6 +361,8 @@ static void reload(BOOL notify)
     }
 }
 
+static void settings_applied(void) { reload(FALSE); }
+
 /* ---------------------------------------------------------------- window */
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
@@ -334,20 +384,12 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         switch (wp) {
         case T_RETRY: try_connect(); break;
-        case T_LONG:
-            KillTimer(h, T_LONG);
-            if (g_down && !g_rotated) {
-                g_longFired = TRUE;
-                LOG(L"long press");
-                action_press(&g_downProfile->long_press);
-            }
-            break;
+        case T_LONG: on_long_timer(); break;
         case T_DBL:
             KillTimer(h, T_DBL);
             if (g_clickPending) {
                 g_clickPending = FALSE;
-                LOG(L"click");
-                action_press(&g_clickProfile->click);
+                fire(g_clickProfile, G_CLICK, 1);
             }
             break;
         case T_LED: led_tick(); break;
@@ -365,15 +407,18 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TRAY:
         switch (LOWORD(lp)) {
         case WM_CONTEXTMENU:
+            tray_menu();
+            break;
         case NIN_SELECT:
         case NIN_KEYSELECT:
-            tray_menu();
+            settings_open(g_inst, settings_applied);
             break;
         }
         return 0;
 
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case ID_SETTINGS: settings_open(g_inst, settings_applied); break;
         case ID_PAUSE:   g_paused = !g_paused; reset_gesture(); tray_update(); break;
         case ID_EDIT:    ShellExecuteW(NULL, L"open", L"notepad.exe", config_path(), NULL, SW_SHOWNORMAL); break;
         case ID_RELOAD:  reload(TRUE); break;
@@ -459,6 +504,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
+        if (settings_dialog_msg(&m)) continue;
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
